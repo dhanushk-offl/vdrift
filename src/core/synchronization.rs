@@ -56,10 +56,17 @@ pub fn sync_references(
             continue;
         }
         let Some(current) = &reference.current else {
-            return Err(VdriftError::Adapter(format!(
-                "cannot determine the current version in {} — add a recognizable version or remove it from [references]",
-                reference.display_path(&repo.root)
-            )));
+            // Auto-detected references without a readable version (e.g. a
+            // workspace manifest with no version field) are simply skipped.
+            // Explicitly configured references must resolve or the user is
+            // told what to fix.
+            if reference.kind == crate::core::detection::ReferenceKind::Reference {
+                return Err(VdriftError::Adapter(format!(
+                    "cannot determine the current version in {} — add a recognizable version or remove it from [references]",
+                    reference.display_path(&repo.root)
+                )));
+            }
+            continue;
         };
         if current == target {
             continue;

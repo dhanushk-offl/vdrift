@@ -473,3 +473,274 @@ fn agent_workflow_is_deterministic() {
     let out = run(vdrift().args(["verify", "--ci"]).current_dir(d.path()));
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
 }
+
+// -------------------------------------------------------- new adapters (2026)
+
+#[test]
+fn go_version_file_is_canonical() {
+    let d = fixture("go");
+    write(
+        &d.path().join("version.go"),
+        "// Package app is the root package.\npackage app\n\nvar Version = \"1.4.0\"\n",
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift().args(["scan", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["project"]["type"], "go");
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["canonical"]["version"], "1.4.0");
+    assert_eq!(v["canonical"]["file"], "version.go");
+
+    let out = run(vdrift()
+        .args(["apply", "--version", "1.5.0", "--no-commit"])
+        .current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let f = fs::read_to_string(d.path().join("version.go")).unwrap();
+    assert!(f.contains("1.5.0"));
+    assert!(!f.contains("1.4.0"));
+}
+
+#[test]
+fn python_pyproject_and_version_file_stay_in_sync() {
+    let d = fixture("py");
+    write(
+        &d.path().join("pyproject.toml"),
+        "[project]\nname = \"lib\"\nversion = \"2.1.0\"\n",
+    );
+    write(
+        &d.path().join("src/lib/_version.py"),
+        "__version__ = \"2.1.0\"\n",
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift().args(["scan", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["project"]["type"], "python");
+
+    let out = run(vdrift()
+        .args(["apply", "--version", "2.2.0", "--no-commit"])
+        .current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let manifest = fs::read_to_string(d.path().join("pyproject.toml")).unwrap();
+    assert!(manifest.contains("version = \"2.2.0\""));
+    let vfile = fs::read_to_string(d.path().join("src/lib/_version.py")).unwrap();
+    assert!(vfile.contains("\"2.2.0\""));
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+#[test]
+fn tauri_conf_and_cargo_manifest_stay_in_sync() {
+    let d = fixture("tauri");
+    write(
+        &d.path().join("src-tauri/tauri.conf.json"),
+        "{\n  \"version\": \"0.1.0\",\n  \"productName\": \"app\"\n}\n",
+    );
+    write(
+        &d.path().join("src-tauri/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift().args(["scan", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["project"]["type"], "tauri");
+
+    let out = run(vdrift()
+        .args(["apply", "--version", "0.1.1", "--no-commit"])
+        .current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let conf: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(d.path().join("src-tauri/tauri.conf.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(conf["version"], "0.1.1");
+    let manifest = fs::read_to_string(d.path().join("src-tauri/Cargo.toml")).unwrap();
+    assert!(manifest.contains("version = \"0.1.1\""));
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+#[test]
+fn maven_pom_is_canonical_and_updates_in_place() {
+    let d = fixture("maven");
+    write(
+        &d.path().join("pom.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>app</artifactId>
+  <version>1.2.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift()
+        .args(["apply", "--version", "1.2.1", "--no-commit"])
+        .current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let pom = fs::read_to_string(d.path().join("pom.xml")).unwrap();
+    assert!(pom.contains("<version>1.2.1</version>"));
+    // The dependency version is untouched.
+    assert!(pom.contains("<version>4.13.2</version>"));
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+#[test]
+fn pnpm_lock_is_derived_and_synced() {
+    let d = fixture("pnpm");
+    write(
+        &d.path().join("package.json"),
+        "{\n  \"name\": \"app\",\n  \"version\": \"1.0.0\"\n}\n",
+    );
+    write(
+        &d.path().join("pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\n\nimporters:\n  .:\n    version: 0.9.0\n",
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+
+    let out = run(vdrift().args(["sync"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let lock = fs::read_to_string(d.path().join("pnpm-lock.yaml")).unwrap();
+    assert!(lock.contains("version: 1.0.0"));
+    assert!(!lock.contains("0.9.0"));
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+#[test]
+fn bun_lock_is_derived_and_synced() {
+    let d = fixture("bun");
+    write(
+        &d.path().join("package.json"),
+        "{\n  \"name\": \"app\",\n  \"version\": \"1.0.0\"\n}\n",
+    );
+    write(
+        &d.path().join("bun.lock"),
+        "{\n  \"workspaces\": {\n    \"\": {\n      \"version\": \"0.9.0\"\n    }\n  }\n}\n",
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+
+    let out = run(vdrift().args(["sync"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let lock = fs::read_to_string(d.path().join("bun.lock")).unwrap();
+    assert!(lock.contains("\"version\": \"1.0.0\""));
+    assert!(!lock.contains("0.9.0"));
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+#[test]
+fn yarn_lock_is_derived_and_synced() {
+    let d = fixture("yarn");
+    write(
+        &d.path().join("package.json"),
+        "{\n  \"name\": \"app\",\n  \"version\": \"1.0.0\"\n}\n",
+    );
+    write(
+        &d.path().join("yarn.lock"),
+        "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n\napp@1.0.0:\n  version \"1.0.0\"\n",
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+
+    let out = run(vdrift()
+        .args(["apply", "--version", "1.1.0", "--no-commit"])
+        .current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let lock = fs::read_to_string(d.path().join("yarn.lock")).unwrap();
+    assert!(lock.contains("version \"1.1.0\""));
+
+    let out = run(vdrift().args(["check", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+#[test]
+fn dart_pubspec_preserves_build_metadata() {
+    let d = fixture("pubspec");
+    write(
+        &d.path().join("pubspec.yaml"),
+        "name: my_app\nenvironment:\n  sdk: '>=3.0.0 <4.0.0'\nversion: 1.2.0+5\n",
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift().args(["scan", "--json"]).current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["project"]["type"], "dart");
+    assert_eq!(v["sources"][0]["version"], "1.2.0+5");
+    assert_eq!(v["sources"][0]["kind"], "canonical");
+
+    let out = run(vdrift()
+        .args(["apply", "--version", "1.2.1+5", "--no-commit"])
+        .current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let pubspec = fs::read_to_string(d.path().join("pubspec.yaml")).unwrap();
+    assert!(pubspec.contains("version: 1.2.1+5"));
+}
+
+#[test]
+fn php_composer_json_is_canonical() {
+    let d = fixture("composer");
+    write(
+        &d.path().join("composer.json"),
+        "{\n  \"name\": \"acme/lib\",\n  \"version\": \"1.0.0\"\n}\n",
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift()
+        .args(["apply", "--version", "1.0.1", "--no-commit"])
+        .current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(d.path().join("composer.json")).unwrap()).unwrap();
+    assert_eq!(json["version"], "1.0.1");
+}
+
+#[test]
+fn ruby_gemspec_is_canonical() {
+    let d = fixture("gemspec");
+    write(
+        &d.path().join("mygem.gemspec"),
+        "Gem::Specification.new do |spec|\n  spec.name    = \"mygem\"\n  spec.version = \"0.2.0\"\nend\n",
+    );
+    commit_all(d.path(), "chore: initial");
+
+    let out = run(vdrift()
+        .args(["apply", "--version", "0.2.1", "--no-commit"])
+        .current_dir(d.path()));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let gemspec = fs::read_to_string(d.path().join("mygem.gemspec")).unwrap();
+    assert!(gemspec.contains("spec.version = \"0.2.1\""));
+    assert!(!gemspec.contains("0.2.0"));
+}

@@ -75,14 +75,15 @@ pub struct DetectionResult {
 }
 
 impl DetectionResult {
-    /// Writable references that disagree with the canonical version.
+    /// Writable references with a known current version that disagree with the
+    /// canonical version.
     pub fn drifted_refs(&self) -> Vec<&VersionReference> {
         let Some(canon) = &self.canonical else {
             return Vec::new();
         };
         self.refs
             .iter()
-            .filter(|r| r.writable && r.current.as_ref() != Some(canon))
+            .filter(|r| r.writable && r.current.is_some() && r.current.as_ref() != Some(canon))
             .collect()
     }
 }
@@ -95,8 +96,8 @@ fn canonical_priority(file: &Path) -> u8 {
         .unwrap_or_default();
     match name {
         "package.json" => 4,
-        "Cargo.toml" => 3,
-        "pyproject.toml" => 2,
+        "Cargo.toml" | "tauri.conf.json" => 3,
+        "pyproject.toml" | "pom.xml" => 2,
         "go.mod" => 1,
         _ => 0,
     }
@@ -118,6 +119,17 @@ pub fn detect(repo: &Repository, config: &ProjectConfig) -> Result<DetectionResu
 
     let generic = adapters::generic(config);
     refs.extend(generic.detect(repo)?);
+
+    // Multiple adapters may report the same file; keep the first (most
+    // specific) report.
+    let mut seen: Vec<PathBuf> = Vec::new();
+    refs.retain(|r| {
+        if seen.contains(&r.file) {
+            return false;
+        }
+        seen.push(r.file.clone());
+        true
+    });
 
     let (canonical, canonical_file) = resolve_canonical(&mut refs, repo, config)?;
 
@@ -170,7 +182,7 @@ fn resolve_canonical(
 
     let mut canonicals: Vec<VersionReference> = refs
         .iter()
-        .filter(|r| r.kind == ReferenceKind::Canonical)
+        .filter(|r| r.kind == ReferenceKind::Canonical && r.current.is_some())
         .cloned()
         .collect();
 

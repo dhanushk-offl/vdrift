@@ -1,3 +1,4 @@
+use crate::adapters::util;
 use crate::core::detection::{ReferenceKind, VersionReference};
 use crate::core::version::Version;
 use crate::errors::{Result, VdriftError};
@@ -19,16 +20,11 @@ impl super::VersionAdapter for CargoAdapter {
                 VdriftError::Adapter(format!("invalid TOML in {}: {e}", manifest.display()))
             })?;
             let pkg = value.get("package").and_then(|p| p.as_table());
-            let name = pkg
+            package_name = pkg
                 .and_then(|p| p.get("name"))
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            let version = pkg
-                .and_then(|p| p.get("version"))
-                .and_then(|v| v.as_str())
-                .map(Version::parse)
-                .transpose()?;
-            package_name = name.clone();
+            let version = util::read_toml_keys(&manifest, &["package", "version"])?;
             refs.push(VersionReference::new(
                 manifest,
                 version,
@@ -92,68 +88,20 @@ fn lock_version<'a>(value: &'a toml::Value, package_name: Option<&str>) -> Optio
     None
 }
 
-/// Replaces the version value on a `version = "..."` line inside the section
-/// delimited by [start, end) of `lines`.
-fn replace_section_version(
-    lines: &mut [String],
-    start: usize,
-    end: usize,
-    old: Option<&str>,
-    new: &str,
-) -> bool {
-    for i in start..end.min(lines.len()) {
-        let trimmed = lines[i].trim();
-        if trimmed.starts_with("version") && trimmed.starts_with("version =") {
-            if let Some(old) = old {
-                let expected = format!("version = \"{old}\"");
-                if trimmed != expected {
-                    continue;
-                }
-            }
-            let indent = lines[i]
-                .chars()
-                .take_while(|c| *c == ' ' || *c == '\t')
-                .collect::<String>();
-            lines[i] = format!("{indent}version = \"{new}\"");
-            return true;
-        }
-    }
-    false
-}
-
 fn update_manifest(path: &std::path::Path, version: &Version, old: Option<&str>) -> Result<()> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| VdriftError::Adapter(format!("cannot read {}: {e}", path.display())))?;
-    let mut lines: Vec<String> = text.lines().map(String::from).collect();
-
-    let pkg_start = lines
-        .iter()
-        .position(|l| l.trim() == "[package]")
-        .ok_or_else(|| {
-            VdriftError::Adapter(format!("no [package] section in {}", path.display()))
-        })?;
-    let pkg_end = lines[pkg_start + 1..]
-        .iter()
-        .position(|l| l.trim_start().starts_with('['))
-        .map(|i| pkg_start + 1 + i)
-        .unwrap_or(lines.len());
-
-    if !replace_section_version(
-        &mut lines,
-        pkg_start + 1,
-        pkg_end,
-        old,
-        &version.to_string(),
-    ) {
+    if !util::write_section_keys(
+        path,
+        "package",
+        &["version =", "version="],
+        old.and_then(|o| Version::parse(o).ok()).as_ref(),
+        version,
+    )? {
         return Err(VdriftError::Adapter(format!(
             "no version line in [package] of {}",
             path.display()
         )));
     }
-
-    let rendered = lines.join("\n") + "\n";
-    std::fs::write(path, rendered)
-        .map_err(|e| VdriftError::Adapter(format!("cannot write {}: {e}", path.display())))
+    Ok(())
 }
 
 fn update_lock(path: &std::path::Path, version: &Version, old: Option<&str>) -> Result<()> {
@@ -189,7 +137,7 @@ fn update_lock(path: &std::path::Path, version: &Version, old: Option<&str>) -> 
             _ => false,
         };
 
-        if matches && replace_section_version(&mut lines, block_start, block_end, old, &new) {
+        if matches && util::replace_section_version(&mut lines, block_start, block_end, old, &new) {
             changed = true;
             break;
         }

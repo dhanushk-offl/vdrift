@@ -46,10 +46,10 @@ All commands support `--json`, `--dry-run`, and `-C <dir>`.
 ## How it works
 
 1. **Detect** — the canonical version is resolved with an explicit priority
-   order (npm > Cargo > generic configured source). Lockfiles and generated
-   files become *derived* references; configured files become *reference*
-   references; a gitignore-aware scan finds *candidates* (never written
-   without configuration).
+   order (npm > Cargo/Tauri > Python/Maven > generic configured source).
+   Lockfiles and generated files become *derived* references; configured files
+   become *reference* references; a gitignore-aware scan finds *candidates*
+   (never written without configuration).
 2. **Propose** — commit subjects since the last version change are classified
    with deterministic Conventional Commits rules: `feat` → minor, `fix`/
    `perf`/`refactor` → patch, `!`/`BREAKING CHANGE` → major.
@@ -58,6 +58,25 @@ All commands support `--json`, `--dry-run`, and `-C <dir>`.
    any write so a failed run never leaves a half-applied tree.
 4. **Verify** — re-detects and compares; `vdrift verify --ci` is the
    deterministic gate for pipelines.
+
+## Supported ecosystems
+
+| Ecosystem | Canonical source | Derived / synced references |
+| --- | --- | --- |
+| Node.js (npm / pnpm / bun / yarn) | `package.json` | `package-lock.json`, `pnpm-lock.yaml`, `bun.lock`, `yarn.lock` |
+| Rust / Tauri | `Cargo.toml`, `tauri.conf.json` | `Cargo.lock`, `src-tauri/Cargo.toml` |
+| Go | `version.go` (`var/const Version`) | — |
+| Python | `pyproject.toml`, `setup.py`, `setup.cfg` | `_version.py` / `__init__.py` (`__version__`) |
+| Java / JVM | `pom.xml`, `build.gradle(.kts)`, `gradle.properties` | — |
+| Dart / Flutter | `pubspec.yaml` (`version: 1.2.0+5`) | — |
+| Elixir | `mix.exs` (`version: "…"`) | — |
+| PHP | `composer.json` | — |
+| Ruby | `*.gemspec` (`spec.version =`) | — |
+| Haskell | `package.yaml` / `*.cabal` (`version:`) | — |
+| Anything else | configured `[version] source` | configured `[references] files` |
+
+Multiple canonical sources may coexist; they must agree on the version or
+`vdrift` refuses to guess (`MULTIPLE_VERSION_SOURCES`).
 
 ## Git integration
 
@@ -117,6 +136,6 @@ vdrift verify --ci             # deterministic pass/fail
 
 ```sh
 cargo build
-cargo test     # unit + end-to-end CLI tests (git + npm/cargo/generic fixtures)
+cargo test     # unit + end-to-end CLI tests (all ecosystem fixtures)
 cargo clippy --all-targets
 ```

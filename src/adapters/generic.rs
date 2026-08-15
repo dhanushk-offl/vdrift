@@ -1,3 +1,5 @@
+use crate::adapters::is_known_manifest;
+use crate::adapters::util;
 use crate::config::project::ProjectConfig;
 use crate::core::detection::{ReferenceKind, VersionReference};
 use crate::core::version::Version;
@@ -29,7 +31,7 @@ impl GenericAdapter {
                 .unwrap_or_default()
                 .to_string();
             // Known manifests are owned by their ecosystem adapter.
-            if !matches!(name.as_str(), "package.json" | "Cargo.toml") {
+            if !is_known_manifest(&name) {
                 files.push(source);
             }
         }
@@ -52,7 +54,7 @@ impl super::VersionAdapter for GenericAdapter {
             } else {
                 ReferenceKind::Reference
             };
-            let current = read_version(&path)?;
+            let current = read_structured_version(&path)?;
             refs.push(VersionReference::new(path, current, kind, true));
         }
 
@@ -64,40 +66,17 @@ impl super::VersionAdapter for GenericAdapter {
     }
 }
 
-/// Reads the top-level `version` value from a structured file, or `None` for
-/// text files (matching happens later against the canonical version).
-fn read_version(path: &Path) -> Result<Option<Version>> {
+/// Reads a self-contained version for structured files; `Ok(None)` for
+/// plain text (matched later against the canonical version).
+fn read_structured_version(path: &Path) -> Result<Option<Version>> {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return Ok(None);
     };
-    if !matches!(ext, "json" | "yaml" | "yml" | "toml") {
-        return Ok(None);
-    }
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| VdriftError::Adapter(format!("cannot read {}: {e}", path.display())))?;
-
-    let value: Option<String> = match ext {
-        "json" => serde_json::from_str::<serde_json::Value>(&text)
-            .map_err(|e| VdriftError::Adapter(format!("invalid JSON in {}: {e}", path.display())))?
-            .get("version")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        "yaml" | "yml" => serde_yaml::from_str::<serde_yaml::Value>(&text)
-            .map_err(|e| VdriftError::Adapter(format!("invalid YAML in {}: {e}", path.display())))?
-            .get("version")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        "toml" => toml::from_str::<toml::Value>(&text)
-            .map_err(|e| VdriftError::Adapter(format!("invalid TOML in {}: {e}", path.display())))?
-            .get("version")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        _ => None,
-    };
-
-    match value {
-        Some(s) => Ok(Some(Version::parse(&s)?)),
-        None => Ok(None),
+    match ext {
+        "json" => util::read_json_version(path),
+        "yaml" | "yml" => util::read_yaml_keys(path, &["version"]),
+        "toml" => util::read_toml_keys(path, &["version"]),
+        _ => Ok(None),
     }
 }
 
@@ -105,36 +84,16 @@ fn update_file(path: &Path, old: Option<&Version>, version: &Version) -> Result<
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return update_text(path, old, version);
     };
-
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| VdriftError::Adapter(format!("cannot read {}: {e}", path.display())))?;
-
-    let rendered: String = match ext {
-        "json" => {
-            let mut value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-                VdriftError::Adapter(format!("invalid JSON in {}: {e}", path.display()))
-            })?;
-            if !value.is_object() {
-                return Err(VdriftError::Adapter(format!(
-                    "{} is not a JSON object",
-                    path.display()
-                )));
-            }
-            value["version"] = serde_json::Value::String(version.to_string());
-            serde_json::to_string_pretty(&value).map_err(|e| {
-                VdriftError::Adapter(format!("failed to serialize {}: {e}", path.display()))
-            })?
-        }
-        "yaml" | "yml" => {
-            let mut value: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|e| {
-                VdriftError::Adapter(format!("invalid YAML in {}: {e}", path.display()))
-            })?;
-            value["version"] = serde_yaml::Value::String(version.to_string());
-            serde_yaml::to_string(&value).map_err(|e| {
-                VdriftError::Adapter(format!("failed to serialize {}: {e}", path.display()))
-            })?
-        }
+    match ext {
+        "json" => util::write_json_version(path, version),
+        "yaml" | "yml" => util::write_yaml_keys(path, &["version"], version),
         "toml" => {
+            let text = util::read_text(path)?;
+            if util::write_section_keys(path, "version", &["version =", "version="], old, version)?
+            {
+                return Ok(());
+            }
+            // No version line; fall back to structured serialization.
             let mut value: toml::Value = toml::from_str(&text).map_err(|e| {
                 VdriftError::Adapter(format!("invalid TOML in {}: {e}", path.display()))
             })?;
@@ -145,15 +104,13 @@ fn update_file(path: &Path, old: Option<&Version>, version: &Version) -> Result<
                 )));
             }
             value["version"] = toml::Value::String(version.to_string());
-            toml::to_string(&value).map_err(|e| {
+            let rendered = toml::to_string(&value).map_err(|e| {
                 VdriftError::Adapter(format!("failed to serialize {}: {e}", path.display()))
-            })?
+            })?;
+            util::write_text(path, &rendered)
         }
-        _ => return update_text(path, old, version),
-    };
-
-    std::fs::write(path, rendered)
-        .map_err(|e| VdriftError::Adapter(format!("cannot write {}: {e}", path.display())))
+        _ => update_text(path, old, version),
+    }
 }
 
 /// Replaces exact occurrences of the old version string in plain text.
@@ -167,8 +124,7 @@ fn update_text(path: &Path, old: Option<&Version>, version: &Version) -> Result<
     let old_str = old.to_string();
     let new_str = version.to_string();
 
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| VdriftError::Adapter(format!("cannot read {}: {e}", path.display())))?;
+    let text = util::read_text(path)?;
     if !text.contains(&old_str) {
         return Err(VdriftError::Adapter(format!(
             "{} does not contain version {old_str}",
@@ -176,6 +132,5 @@ fn update_text(path: &Path, old: Option<&Version>, version: &Version) -> Result<
         )));
     }
     let updated = text.replace(&old_str, &new_str);
-    std::fs::write(path, updated)
-        .map_err(|e| VdriftError::Adapter(format!("cannot write {}: {e}", path.display())))
+    util::write_text(path, &updated)
 }

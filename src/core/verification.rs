@@ -17,7 +17,7 @@ pub fn verify(refs: &[VersionReference], canonical: Option<Version>) -> Verifica
     let mut drifts = Vec::new();
     if let Some(canon) = &canonical {
         for r in refs {
-            if !r.writable {
+            if !r.writable || r.current.is_none() {
                 continue;
             }
             if r.current.as_ref() != Some(canon) {

@@ -139,3 +139,14 @@ cargo build
 cargo test     # unit + end-to-end CLI tests (all ecosystem fixtures)
 cargo clippy --all-targets
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development setup,
+codebase tour, and how to add a new ecosystem adapter.
+
+## License & support
+
+Released under the [MIT License](LICENSE).
+
+- Report security issues privately — see [SECURITY.md](SECURITY.md).
+- Behavior expectations — see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- Support the project: [GitHub Sponsors](https://github.com/sponsors/dhanushk-offl) · [Buy Me a Coffee](https://www.buymeacoffee.com/itzmedhanu)
